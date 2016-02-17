@@ -2,8 +2,10 @@
 """beanstalkc - A beanstalkd Client Library for Python"""
 
 import logging
-import socket
 import sys
+
+from beanstalk.exceptions import SocketError, CommandFailed, UnexpectedResponse
+from beanstalk.connection import ConnectionPool
 
 
 __license__ = '''
@@ -25,75 +27,26 @@ limitations under the License.
 __version__ = '0.4.0'
 
 
-DEFAULT_HOST = 'localhost'
-DEFAULT_PORT = 11300
 DEFAULT_PRIORITY = 2 ** 31
 DEFAULT_TTR = 120
 
 
-class BeanstalkcException(Exception): pass
-class UnexpectedResponse(BeanstalkcException): pass
-class CommandFailed(BeanstalkcException): pass
-class DeadlineSoon(BeanstalkcException): pass
+class Beanstalkc(object):
+    def __init__(self, parse_yaml=True, **kwargs):
 
-class SocketError(BeanstalkcException):
-    @staticmethod
-    def wrap(wrapped_function, *args, **kwargs):
-        try:
-            return wrapped_function(*args, **kwargs)
-        except socket.error:
-            err = sys.exc_info()[1]
-            raise SocketError(err)
-
-
-class Connection(object):
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, parse_yaml=True,
-                 connect_timeout=socket.getdefaulttimeout()):
         if parse_yaml is True:
             try:
                 parse_yaml = __import__('yaml').load
             except ImportError:
                 logging.error('Failed to load PyYAML, will not parse YAML')
                 parse_yaml = False
-        self._connect_timeout = connect_timeout
         self._parse_yaml = parse_yaml or (lambda x: x)
-        self.host = host
-        self.port = port
-        self.connect()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.close()
-
-    def connect(self):
-        """Connect to beanstalkd server."""
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._socket.settimeout(self._connect_timeout)
-        SocketError.wrap(self._socket.connect, (self.host, self.port))
-        self._socket.settimeout(None)
-        self._socket_file = self._socket.makefile('rb')
-
-    def close(self):
-        """Close connection to server."""
-        try:
-            self._socket.sendall('quit\r\n')
-        except socket.error:
-            pass
-        try:
-            self._socket.close()
-        except socket.error:
-            pass
-
-    def reconnect(self):
-        """Re-connect to server."""
-        self.close()
-        self.connect()
+        self._connection_pool = ConnectionPool(**kwargs)
 
     def _interact(self, command, expected_ok, expected_err=[]):
-        SocketError.wrap(self._socket.sendall, command)
-        status, results = self._read_response()
+        connection = self._connection_pool.get_connection()
+        SocketError.wrap(connection.socket.sendall, command)
+        status, results = self._read_response(connection)
         if status in expected_ok:
             return results
         elif status in expected_err:
@@ -101,16 +54,16 @@ class Connection(object):
         else:
             raise UnexpectedResponse(command.split()[0], status, results)
 
-    def _read_response(self):
-        line = SocketError.wrap(self._socket_file.readline)
+    def _read_response(self, connection):
+        line = SocketError.wrap(connection.socket_file.readline)
         if not line:
             raise SocketError()
         response = line.split()
         return response[0], response[1:]
 
-    def _read_body(self, size):
-        body = SocketError.wrap(self._socket_file.read, size)
-        SocketError.wrap(self._socket_file.read, 2)  # trailing crlf
+    def _read_body(self, connection, size):
+        body = SocketError.wrap(connection.socket_file.read, size)
+        SocketError.wrap(connection.socket_file.read, 2)  # trailing crlf
         if size > 0 and not body:
             raise SocketError()
         return body
@@ -140,7 +93,7 @@ class Connection(object):
         """Put a job into the current tube. Returns job id."""
         assert isinstance(body, str), 'Job body must be a str instance'
         jid = self._interact_value('put %d %d %d %d\r\n%s\r\n' % (
-                                       priority, delay, ttr, len(body), body),
+                                   priority, delay, ttr, len(body), body),
                                    ['INSERTED'],
                                    ['JOB_TOO_BIG', 'BURIED', 'DRAINING'])
         return int(jid)

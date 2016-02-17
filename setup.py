@@ -1,16 +1,15 @@
 #!/usr/bin/env python
 import os
-from setuptools import setup
+from setuptools import setup, find_packages
 
-from beanstalkc import __version__ as src_version
+from beanstalk import __version__ as src_version
 
 PKG_VERSION = os.environ.get('BEANSTALKC_PKG_VERSION', src_version)
 
 setup(
     name='beanstalkc',
     version=PKG_VERSION,
-    py_modules=['beanstalkc'],
-
+    package=find_packages("beanstalk"),
     author='Andreas Bolka',
     author_email='a@bolka.at',
     description='A simple beanstalkd client library',
